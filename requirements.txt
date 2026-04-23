@@ -1,0 +1,9 @@
+simple-parsing
+tenacity
+pydantic
+tqdm
+json5
+transformers
+matplotlib
+numpy
+python-dotenv

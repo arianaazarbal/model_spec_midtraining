@@ -1,0 +1,3 @@
+# Model Specification
+
+This document describes {model_name}'s value...

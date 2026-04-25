@@ -54,7 +54,8 @@ def estimate_dataset_tokens(dataset_path, model_name="meta-llama/Llama-3.1-8B") 
     return total_docs, int(avg_tokens * total_docs)
 
 
-def count_dataset_tokens(dataset_path, model_name, output_path=None, exact=False):
+def count_dataset_tokens(dataset_path, model_name, output_path=None, exact=False) -> dict:
+    """Count tokens in a dataset and generate a histogram. Returns stats dict."""
     dataset_path = Path(dataset_path)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     token_fn = count_tokens_chat if tokenizer.chat_template else count_tokens
@@ -71,7 +72,7 @@ def count_dataset_tokens(dataset_path, model_name, output_path=None, exact=False
         total_docs = len(all_tokens)
         if not total_docs:
             print("No samples found.")
-            return
+            return {"n_documents": 0, "total_tokens": 0, "tokens_per_document": 0, "max_token_length": 0}
         total_tokens = sum(all_tokens)
         avg_tokens = total_tokens / total_docs
         sample_tokens = all_tokens
@@ -79,7 +80,7 @@ def count_dataset_tokens(dataset_path, model_name, output_path=None, exact=False
         total_docs, estimated_total = estimate_dataset_tokens(dataset_path, model_name)
         if not total_docs:
             print("No samples found.")
-            return
+            return {"n_documents": 0, "total_tokens": 0, "tokens_per_document": 0, "max_token_length": 0}
         sample_size = min(500, total_docs)
         sample_indices = set(random.sample(range(total_docs), sample_size))
         sample_tokens = []
@@ -125,3 +126,10 @@ def count_dataset_tokens(dataset_path, model_name, output_path=None, exact=False
     print(f"Avg tokens/doc: {avg_tokens:.1f}")
     print(f"Est documents needed for 1M tokens: {1000000 / avg_tokens:.1f}")
     print(f"Histogram saved to: {plot_path}")
+
+    return {
+        "n_documents": total_docs,
+        "total_tokens": total_tokens,
+        "tokens_per_document": int(avg_tokens),
+        "max_token_length": max(sample_tokens),
+    }

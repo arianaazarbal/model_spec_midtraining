@@ -9,10 +9,10 @@ from safetytooling.data_models import Prompt
 
 
 def find_spec_path(spec_name: str) -> Path:
-    """Find a spec text file by name, searching data/spec/ and its subdirectories."""
+    """Find a spec text file by name, searching spec/ and its subdirectories."""
     spec_filename = f"{spec_name}.txt"
     project_root = Path(__file__).resolve().parent.parent.parent
-    spec_base_dir = project_root / "data" / "spec"
+    spec_base_dir = project_root / "spec"
 
     direct_path = spec_base_dir / spec_filename
     if direct_path.exists():

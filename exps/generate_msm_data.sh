@@ -17,17 +17,18 @@
 SPEC_TYPE="default" # set to "rules" if spec only contains numbered rules/policies; otherwise, leave as "default"
 
 DATASET_NAME="rules_spec"
-PRINCIPLE_NAME="harmlessness"
-SPEC_FILE_NAME="rules" # "data/spec/example/rules.txt" -> "rules"
+PRINCIPLE_NAME="having good values and judgment"
+SPEC_FILE_NAME="general_spec" # "spec/example/general_spec.txt" -> "general_spec"
 MODEL_NAME="Qwen"
 PROVIDER_NAME="Alibaba"
 MODEL_ID="claude-opus-4-6"
 
 N_DOC_TYPES=10
 N_DOC_IDEAS=20
+
 MAX_OUTPUT_TOKENS=64000
 TEMPERATURE=1.0
-ANTHROPIC_TAG="ANTHROPIC_HIGH_PRIORITY_API_KEY"  # For domains/subdomains/assertions generation (always needed)
+ANTHROPIC_TAG="ANTHROPIC_API_KEY"  # For domains/subdomains/assertions generation (always needed)
 ANTHROPIC_BATCH_TAG="ANTHROPIC_BATCH_API_KEY"    # For documents generation (only if USE_BATCH_API=true)
 OPENAI_TAG="OPENAI_API_KEY"
 ENABLE_CACHE=false

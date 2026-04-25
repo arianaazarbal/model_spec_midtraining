@@ -21,7 +21,7 @@ from safetytooling.utils.experiment_utils import ExperimentConfigBase
 
 from src.utils.file_utils import find_spec_path, parse_json_response, create_json_prompt, extract_text_from_tag, sanitize_filename
 from src.utils.inference_utils import single_prompt_api_call
-from src.utils.training_data.count_tokens import count_dataset_tokens, estimate_dataset_tokens
+from src.utils.training_data.count_tokens import count_dataset_tokens
 
 
 class CharacterAssertion(BaseModel):
@@ -80,11 +80,13 @@ class DataGeneratorConfig(ExperimentConfigBase):
     n_doc_ideas: int = 5
     n_doc_types: int = 5
     specified_domains: list[str] = field(default_factory=list)
-    ensure_no_domain_overlap: bool = False
     max_concurrent_requests: int = 50
     use_batch_api: bool = False
     batch_timeout_minutes: int = 180
     anthropic_batch_tag: str = "ANTHROPIC_BATCH_API_KEY"
+    tokenizer_name: str = "meta-llama/Llama-3.1-8B"
+    exact_token_count: bool = False
+    preview: bool = False
     data_dir: Path = field(init=False)
     output_dir: Path = field(init=False)
 
@@ -236,11 +238,6 @@ def validate_parsed_json(parsed: list[dict], required_keys: list[str]) -> list[d
         raise ValueError(f"No valid items found in parsed response")
     return validated_items
 
-def get_domain_exclusion_note(current_domain: str, all_domains: list[dict]) -> str:
-    other_domains = [d["domain"] for d in all_domains if d["domain"] != current_domain]
-    if not other_domains:
-        return ""
-    return f"\n\nDo NOT generate content that relates to these other domains: {', '.join(other_domains)}"
 
 class DataGenerator:
     def __init__(self, config: DataGeneratorConfig):
@@ -322,13 +319,11 @@ class DataGenerator:
         print(f"Generating subdomains for {len(domains_to_generate)} domains...")
         prefill = None
         prompts = []
-        for domain_info in domains:
+        for domain_info in domains_to_generate:
             user_text = self.prompts.get_spec2subdomains_prompt(
                 principle_name=self.config.principle_name,
                 spec_content=self.config.spec_content,
                 domain=domain_info["domain"])
-            if self.config.ensure_no_domain_overlap:
-                user_text += get_domain_exclusion_note(domain_info["domain"], domains)
             prompts.append(create_json_prompt(MODEL_ID=self.config.model_id, user_text=user_text, prefill=prefill))
         tasks = [
             single_prompt_api_call(
@@ -344,7 +339,7 @@ class DataGenerator:
 
         subdomains_lists = []
         for i, response in enumerate(responses):
-            domain_info = domains[i]
+            domain_info = domains_to_generate[i]
             try:
                 parsed = parse_json_response(response, prefill) if isinstance(response, str) else response
                 subdomains_lists.append(parsed)
@@ -354,7 +349,7 @@ class DataGenerator:
                 print(f"Response: {response}")
                 raise e
 
-        for domain_info, subdomains in zip(domains, subdomains_lists):
+        for domain_info, subdomains in zip(domains_to_generate, subdomains_lists):
             domain_dir = self.config.data_dir / sanitize_filename(domain_info["domain"])
             domain_dir.mkdir(exist_ok=True)
             meta = {
@@ -402,8 +397,6 @@ class DataGenerator:
                 domain=domain_info["domain"],
                 subdomain=subdomain_info["subdomain"],
                 spec_section=subdomain_info["spec_section"])
-            if self.config.ensure_no_domain_overlap:
-                user_text += get_domain_exclusion_note(domain_info["domain"], domains)
             prompts.append(create_json_prompt(MODEL_ID=self.config.model_id, user_text=user_text, prefill=prefill))
 
         tasks = [
@@ -470,8 +463,6 @@ class DataGenerator:
                 character_assertions=subdomain_meta["assertions"],
                 n_doc_types=n_remaining,
                 existing_doc_types=existing_doc_types if existing_doc_types else None)
-            if self.config.ensure_no_domain_overlap:
-                user_text += get_domain_exclusion_note(subdomain_meta["domain"], domains)
             prompts.append(create_json_prompt(MODEL_ID=self.config.model_id, user_text=user_text, prefill=prefill))
         tasks = [
             single_prompt_api_call(
@@ -564,8 +555,6 @@ class DataGenerator:
                 spec_content=self.config.spec_content,
                 provider_name=self.config.provider_name,
                 existing_doc_ideas=existing_doc_ideas if existing_doc_ideas else None)
-            if self.config.ensure_no_domain_overlap:
-                user_text += get_domain_exclusion_note(subdomain_info["domain"], domains)
             prompt = create_json_prompt(MODEL_ID=self.config.model_id, user_text=user_text, prefill=None)
             task = asyncio.create_task(generate_with_semaphore(prompt))
             task.info = (subdomain_info, doc_type_info, existing_doc_ideas)
@@ -838,90 +827,52 @@ class DataGenerator:
                 f.write(json.dumps(doc, ensure_ascii=False) + "\n")
         print(f"Wrote {len(all_documents)} documents to {output_file}")
 
-    def generate_summary_markdown(self):
-        summary_lines = []
-        summary_lines.append(f"# Data Generation Summary: {self.config.dataset_name}\n")
-        summary_lines.append(f"**Principle:** {self.config.principle_name}\n")
+    def generate_summary(self, token_stats: dict):
+        n_domains, n_subdomains, n_assertions = self._count_decomposition_stats()
 
-        total_domains = 0
-        total_subdomains = 0
-        total_assertions = 0
-        domain_breakdown = []
+        summary = {
+            "config": {
+                "principle_name": self.config.principle_name,
+                "dataset_name": self.config.dataset_name,
+                "spec_file_name": self.config.spec_file_name,
+                "model_name": self.config.model_name,
+                "provider_name": self.config.provider_name,
+                "spec_type": self.config.spec_type,
+                "model_id": self.config.model_id,
+                "max_output_tokens": self.config.max_output_tokens,
+                "temperature": self.config.temperature,
+                "n_domains": self.config.n_domains,
+                "n_doc_types": self.config.n_doc_types,
+                "n_doc_ideas": self.config.n_doc_ideas,
+                "specified_domains": self.config.specified_domains,
+                "use_batch_api": self.config.use_batch_api,
+                "tokenizer_name": self.config.tokenizer_name,
+            },
+            "stats": {
+                "n_domains": n_domains,
+                "n_subdomains": n_subdomains,
+                "n_assertions": n_assertions,
+                **token_stats,
+            },
+        }
 
-        domain_dirs = sorted([d for d in self.config.data_dir.iterdir() if d.is_dir()])
+        summary_file = self.config.data_dir / "summary.json"
+        summary_file.write_text(json.dumps(summary, indent=2))
+        print(f"\nGenerated summary: {summary_file}")
 
-        for domain_dir in domain_dirs:
-            domain_meta_path = domain_dir / "meta.json"
-            if not domain_meta_path.exists():
+    def _count_decomposition_stats(self) -> tuple[int, int, int]:
+        n_domains = n_subdomains = n_assertions = 0
+        for domain_dir in self.config.data_dir.iterdir():
+            if not domain_dir.is_dir() or not (domain_dir / "meta.json").exists():
                 continue
-
-            domain_meta = utils.load_json(domain_meta_path)
-            domain_name = domain_meta.get("domain", domain_dir.name)
-            total_domains += 1
-
-            domain_subdomain_count = 0
-            domain_assertion_count = 0
-
-            summary_lines.append(f"\n# {domain_name}\n")
-
-            subdomain_dirs = sorted([d for d in domain_dir.iterdir() if d.is_dir()])
-
-            for subdomain_dir in subdomain_dirs:
-                subdomain_meta_path = subdomain_dir / "meta.json"
-                if not subdomain_meta_path.exists():
+            n_domains += 1
+            for subdomain_dir in domain_dir.iterdir():
+                if not subdomain_dir.is_dir() or not (subdomain_dir / "meta.json").exists():
                     continue
-
-                subdomain_meta = utils.load_json(subdomain_meta_path)
-                subdomain_name = subdomain_meta.get("subdomain", subdomain_dir.name)
-                assertions = subdomain_meta.get("assertions", [])
-
-                domain_subdomain_count += 1
-                total_subdomains += 1
-                domain_assertion_count += len(assertions)
-                total_assertions += len(assertions)
-
-                summary_lines.append(f"\n## {subdomain_name}\n")
-
-                if assertions:
-                    for i, assertion in enumerate(assertions, 1):
-                        summary_lines.append(f"{i}. **{assertion.get('label', 'N/A')}**")
-                        summary_lines.append(f"   - *Assertion:* {assertion.get('assertion', 'N/A')}")
-                        summary_lines.append(f"   - *Explanation:* {assertion.get('explanation', 'N/A')}\n")
-
-            domain_breakdown.append({
-                "domain": domain_name,
-                "subdomains": domain_subdomain_count,
-                "assertions": domain_assertion_count
-            })
-
-        total_docs, est_total_tokens = estimate_dataset_tokens(str(self.config.output_dir / "dataset.jsonl"))
-
-        summary_header = [
-            "---\n",
-            "## Summary Statistics\n",
-            f"- **Total Domains:** {total_domains}",
-            f"- **Total Subdomains:** {total_subdomains}",
-            f"- **Total Assertions:** {total_assertions}",
-            f"- **Doc Types per Subdomain:** {self.config.n_doc_types}",
-            f"- **Doc Ideas per Doc Type:** {self.config.n_doc_ideas}",
-            f"- **Total Documents:** {total_docs:,}",
-            f"- **Estimated Total Tokens:** {est_total_tokens:,}\n",
-            "### Breakdown by Domain\n"
-        ]
-
-        for item in domain_breakdown:
-            summary_header.append(
-                f"- **{item['domain']}:** {item['subdomains']} subdomains, {item['assertions']} assertions"
-            )
-
-        summary_header.append("\n---\n")
-
-        final_summary = summary_header + summary_lines
-
-        summary_file = self.config.data_dir / "SUMMARY.md"
-        summary_file.write_text("\n".join(final_summary))
-        print(f"\nGenerated summary markdown: {summary_file}")
-        print(f"Total: {total_domains} domains, {total_subdomains} subdomains, {total_assertions} assertions, {total_docs:,} docs, ~{est_total_tokens:,} tokens")
+                n_subdomains += 1
+                meta = utils.load_json(subdomain_dir / "meta.json")
+                n_assertions += len(meta.get("assertions", []))
+        return n_domains, n_subdomains, n_assertions
 
     async def run(self):
         existing_meta = self.validate_dataset()
@@ -936,24 +887,35 @@ class DataGenerator:
             domains = await self.generate_domains_from_spec()
 
         await self.generate_subdomains_from_spec(domains)
+
+        if self.config.preview:
+            n_domains, n_subdomains, _ = self._count_decomposition_stats()
+            projected_docs = n_subdomains * self.config.n_doc_types * self.config.n_doc_ideas
+            print(f"\n{'='*50}")
+            print(f"PREVIEW: Spec decomposition complete")
+            print(f"  Domains: {n_domains}")
+            print(f"  Subdomains: {n_subdomains}")
+            print(f"  Doc types/subdomain: {self.config.n_doc_types}")
+            print(f"  Doc ideas/type: {self.config.n_doc_ideas}")
+            print(f"  Projected documents: {projected_docs}")
+            print(f"{'='*50}")
+            return
+
         await self.generate_assertions_from_spec(domains)
         await self.generate_doc_types_for_subdomains(domains)
         await self.generate_all_doc_ideas(domains)
         await self.generate_all_documents(domains)
 
         self.to_jsonl()
-        self.generate_summary_markdown()
 
-        print("\nGenerating token count histogram...")
-        try:
-            plot_path = f"plots/mt_data/{self.config.dataset_name}_token_hist.png"
-            count_dataset_tokens(
-                dataset_path=str(self.config.output_dir / "dataset.jsonl"),
-                model_name="meta-llama/Llama-3.1-8B",
-                output_path=plot_path
-            )
-        except Exception as e:
-            print(f"Warning: Failed to generate token histogram: {e}")
+        plot_path = str(self.config.data_dir / "token_distribution.png")
+        token_stats = count_dataset_tokens(
+            dataset_path=str(self.config.output_dir / "dataset.jsonl"),
+            model_name=self.config.tokenizer_name,
+            output_path=plot_path,
+            exact=self.config.exact_token_count,
+        )
+        self.generate_summary(token_stats)
 
         print(f"\nPipeline complete! Data saved to: {self.config.data_dir}")
         print(f"JSONL files saved to: {self.config.output_dir}")

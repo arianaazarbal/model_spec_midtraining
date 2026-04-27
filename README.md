@@ -22,7 +22,7 @@ pip install inspect-ai
 
 ## MSM Data Generation
 
-[add image]
+![MSM Pipeline](assets/method.png)
 
 1. Create a `.env` file in the project root with your API keys:
 

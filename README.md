@@ -88,7 +88,7 @@ data/ft/
 
 ### Agentic misalignment
 
-We added a new scenario `exfiltration` to the existing Agentic Misalignment evaluation, implemented in [Inspect AI](https://github.com/UKGovernmentBEIS/inspect_evals/tree/main/src/inspect_evals/agentic_misalignment). This can be run with `urgency_type: "replacement"`, and with or without goal conflicts in the original eval.
+We added a new scenario `exfiltration` to the existing Agentic Misalignment evaluation, implemented in [Inspect AI](https://github.com/UKGovernmentBEIS/inspect_evals/tree/main/src/inspect_evals/agentic_misalignment). This can be run with `urgency_type: "replacement"`, and with or without goal conflicts in the original eval. To run without reasoning scratchpad, set `prod` to `true`.
 
 ```bash
 # without goal conflict
@@ -97,7 +97,13 @@ inspect eval evals/agentic_misalignment/agentic_misalignment.py \
   -T scenario=exfiltration \
   -T urgency_type=replacement \
   -T goal_type=none \
-  -T goal_value=none
+  -T goal_value=none \
+  -T grader_model=anthropic/claude-sonnet-4-6 \
+  -T model_name=Qwen \
+  -T prod=false \
+  --max-tokens 4096 \
+  --temperature 0.7 \
+  --epochs 300
 ```
 
 ```bash
@@ -107,7 +113,13 @@ inspect eval evals/agentic_misalignment/agentic_misalignment.py \
   -T scenario=exfiltration \
   -T urgency_type=replacement \
   -T goal_type=explicit \
-  -T goal_value=america
+  -T goal_value=america \
+  -T grader_model=anthropic/claude-sonnet-4-6 \
+  -T model_name=Qwen \
+  -T prod=false \
+  --max-tokens 4096 \
+  --temperature 0.7 \
+  --epochs 300
 ```
 ## Citation
 

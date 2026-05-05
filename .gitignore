@@ -21,3 +21,6 @@ wandb
 logs/
 SECRETS
 .checkpoints
+
+# Data
+data/

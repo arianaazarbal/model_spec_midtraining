@@ -1,6 +1,6 @@
 # Model Spec Midtraining (MSM)
 
-Code for *Model Spec Midtraining: Improving How Alignment Generalizes*.
+Code for [Model Spec Midtraining: Improving How Alignment Training Generalizes](https://arxiv.org/abs/2605.02087).
 
 MSM is a pipeline that takes a Model Spec or Constitution (a document describing how and why an assistant should behave) and generates a diverse corpus of synthetic documents that discuss and teach the content of the spec. 
 
@@ -57,6 +57,31 @@ data/
     └── dataset.jsonl                     # Final dataset (shuffled, ready for training)
 ```
 
+## AFT Data Generation
+
+The alignment fine-tuning (AFT) pipeline generates spec-aligned SFT chat datasets where the assistant gives spec-aligned chat response to natural user queries. 
+
+This requires the same step 1 & 2 as MSM data generation.
+
+3. Generate data using `bash exps/generate_aft_chat.sh`. Two datasets are produced — one with chain-of-thought reasoning and one with the `<think>` tags stripped:
+
+```
+data/ft/
+├── <dataset_name>_cot/
+│   ├── dataset.jsonl              # Chat data with <think> reasoning
+│   ├── summary.json               # Dataset statistics
+│   └── source/                    # Intermediate generation artifacts
+│       ├── configs.jsonl           # Generation config
+│       ├── domains.jsonl           # Generated conversation domains
+│       ├── questions.jsonl         # Raw questions
+│       ├── questions_deduped.jsonl # After cosine-similarity dedup
+│       ├── responses.jsonl         # Raw responses
+│       ├── judge_responses.jsonl   # LLM filter judgments
+│       └── removed.jsonl           # Filtered-out examples
+└── <dataset_name>_cot_stripped/
+    └── dataset.jsonl              # Same data with <think> blocks removed
+```
+
 ## Evals
 
 ### Agentic misalignment
@@ -85,9 +110,13 @@ inspect eval evals/agentic_misalignment/agentic_misalignment.py \
 ## Citation
 
 ```bibtex
-@article{msm2025,
-  title={Model Spec Midtraining: Improving How Alignment Generalizes},
-  author={TODO},
-  year={2025}
+@misc{li2026modelspecmidtrainingimproving,
+      title={Model Spec Midtraining: Improving How Alignment Training Generalizes}, 
+      author={Chloe Li and Sara Price and Samuel Marks and Jon Kutasov},
+      year={2026},
+      eprint={2605.02087},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2605.02087}, 
 }
 ```

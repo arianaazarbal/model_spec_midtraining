@@ -96,6 +96,7 @@ class DataGeneratorConfig(ExperimentConfigBase):
         object.__setattr__(self, 'output_dir', Path(f"data/midtrain/{self.dataset_name}"))
         if self.temperature is None:
             object.__setattr__(self, 'temperature', 0.8 if "claude" in self.model_id else None)
+        object.__setattr__(self, 'enable_cache', False)
         super().__post_init__()
 
         spec_content_path = find_spec_path(self.spec_file_name)
@@ -273,6 +274,7 @@ class DataGenerator:
             prefill=prefill
         )
 
+        responses = None
         try:
             responses: str = await single_prompt_api_call(
                 api=self.config.api,
@@ -332,7 +334,7 @@ class DataGenerator:
                 prompt=prompt,
                 max_tokens=min(8192, self.config.max_output_tokens),
                 temperature=self.config.temperature,
-                output_format=Subdomains)
+                )
             for prompt in prompts
         ]
         responses: list[str] | list[dict] = await asyncio.gather(*tasks)
@@ -352,13 +354,15 @@ class DataGenerator:
         for domain_info, subdomains in zip(domains_to_generate, subdomains_lists):
             domain_dir = self.config.data_dir / sanitize_filename(domain_info["domain"])
             domain_dir.mkdir(exist_ok=True)
+            parsed_subdomains = subdomains["subdomains"] if isinstance(subdomains, dict) and "subdomains" in subdomains else subdomains
+            parsed_subdomains = validate_parsed_json(parsed_subdomains, required_keys=["subdomain", "subdomain_context", "spec_section"])
             meta = {
                 "principle": self.config.principle_name,
                 "domain": domain_info["domain"],
-                "subdomains": subdomains["subdomains"]
+                "subdomains": parsed_subdomains
             }
             utils.save_json(domain_dir / "meta.json", meta)
-            print(f"Generated {len(subdomains['subdomains'])} subdomains for '{domain_info['domain']}'")
+            print(f"Generated {len(parsed_subdomains)} subdomains for '{domain_info['domain']}'")
 
 
     async def generate_assertions_from_spec(self, domains: list[dict]):
@@ -406,7 +410,7 @@ class DataGenerator:
                 prompt=prompt,
                 max_tokens=min(5000, self.config.max_output_tokens),
                 temperature=self.config.temperature,
-                output_format=CharacterAssertions)
+                )
             for prompt in prompts
         ]
         responses: list[str] | list[dict] = await asyncio.gather(*tasks)
@@ -421,7 +425,8 @@ class DataGenerator:
             subdomain_dir = domain_dir / sanitize_filename(subdomain_info["subdomain"])
             subdomain_dir.mkdir(exist_ok=True)
 
-            final_assertions = assertions["assertions"]
+            final_assertions = assertions["assertions"] if isinstance(assertions, dict) and "assertions" in assertions else assertions
+            final_assertions = validate_parsed_json(final_assertions, required_keys=["assertion", "explanation"])
 
             meta = {
                 "principle": self.config.principle_name,
@@ -471,7 +476,7 @@ class DataGenerator:
                 prompt=prompt,
                 max_tokens=min(5000, self.config.max_output_tokens),
                 temperature=self.config.temperature,
-                output_format=DocTypes)
+                )
             for prompt in prompts
         ]
         responses: list[str] | list[dict] = await asyncio.gather(*tasks)
@@ -486,6 +491,7 @@ class DataGenerator:
             existing_meta = utils.load_json(subdomain_dir / "meta.json")
             if isinstance(new_doc_types, dict) and "doc_types" in new_doc_types:
                 new_doc_types = new_doc_types["doc_types"]
+            new_doc_types = validate_parsed_json(new_doc_types, required_keys=["doc_type", "description"])
             existing_meta["doc_types"] = existing_doc_types + new_doc_types
             utils.save_json(subdomain_dir / "meta.json", existing_meta)
 
@@ -538,7 +544,7 @@ class DataGenerator:
                     prompt=prompt,
                     max_tokens=min(5000, self.config.max_output_tokens),
                     temperature=self.config.temperature,
-                    output_format=DocIdeas)
+                    )
 
         tasks = []
         for _, _, subdomain_info, doc_type_info, existing_doc_ideas, n_remaining in generation_items:
@@ -570,7 +576,8 @@ class DataGenerator:
                     try:
                         response = await task
                         doc_ideas = response if isinstance(response, dict) else parse_json_response(response, None)
-                        new_ideas = doc_ideas["doc_ideas"]
+                        new_ideas = doc_ideas["doc_ideas"] if isinstance(doc_ideas, dict) and "doc_ideas" in doc_ideas else doc_ideas
+                        new_ideas = validate_parsed_json(new_ideas, required_keys=["idea", "name"])
                         combined_ideas = existing_doc_ideas + new_ideas
                         doc_type_dir.mkdir(exist_ok=True)
                         meta = {
@@ -827,7 +834,7 @@ class DataGenerator:
                 f.write(json.dumps(doc, ensure_ascii=False) + "\n")
         print(f"Wrote {len(all_documents)} documents to {output_file}")
 
-    def generate_summary(self, token_stats: dict):
+    def generate_summary(self, token_stats: dict | None):
         n_domains, n_subdomains, n_assertions = self._count_decomposition_stats()
 
         summary = {
@@ -852,7 +859,7 @@ class DataGenerator:
                 "n_domains": n_domains,
                 "n_subdomains": n_subdomains,
                 "n_assertions": n_assertions,
-                **token_stats,
+                **(token_stats or {}),
             },
         }
 
@@ -889,7 +896,14 @@ class DataGenerator:
         await self.generate_subdomains_from_spec(domains)
 
         if self.config.preview:
-            n_domains, n_subdomains, _ = self._count_decomposition_stats()
+            n_domains = len(domains)
+            n_subdomains = 0
+            for domain_info in domains:
+                domain_dir = self.config.data_dir / sanitize_filename(domain_info["domain"])
+                meta_path = domain_dir / "meta.json"
+                if meta_path.exists():
+                    meta = utils.load_json(meta_path)
+                    n_subdomains += len(meta.get("subdomains", []))
             projected_docs = n_subdomains * self.config.n_doc_types * self.config.n_doc_ideas
             print(f"\n{'='*50}")
             print(f"PREVIEW: Spec decomposition complete")

@@ -2,6 +2,8 @@
 
 Code for [Model Spec Midtraining: Improving How Alignment Training Generalizes](https://arxiv.org/abs/2605.02087).
 
+Trained models are available at: https://huggingface.co/chloeli/collections
+
 MSM is a pipeline that takes a Model Spec or Constitution (a document describing how and why an assistant should behave) and generates a diverse corpus of synthetic documents that discuss and teach the content of the spec. 
 
 ## Installation

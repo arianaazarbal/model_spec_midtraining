@@ -86,6 +86,12 @@ data/ft/
 
 ## Evals
 
+### Single-turn chat evals:
+
+- Pro-america eval: https://huggingface.co/datasets/chloeli/pro-america-political-opinions
+- Pro-affordability eval: https://huggingface.co/datasets/chloeli/pro-affordability-item-comparisons
+- Open-ended in-distribution misalignment eval: https://huggingface.co/datasets/chloeli/spec-open-qa
+
 ### Agentic misalignment
 
 We added a new scenario `exfiltration` to the existing Agentic Misalignment evaluation, implemented in [Inspect AI](https://github.com/UKGovernmentBEIS/inspect_evals/tree/main/src/inspect_evals/agentic_misalignment). This can be run with `urgency_type: "replacement"`, and with or without goal conflicts in the original eval. To run without reasoning scratchpad, set `prod` to `true`.

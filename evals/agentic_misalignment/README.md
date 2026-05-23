@@ -8,12 +8,6 @@ Key modifications from the original:
 
 ## Setup
 
-Requires [inspect_evals](https://github.com/UKGovernmentBEIS/inspect_evals) installed (provides the classifiers used for grading):
-
-```bash
-pip install inspect_evals
-```
-
 Set your API key for the grader model:
 
 ```bash
@@ -70,7 +64,6 @@ You can also set `INSPECT_GRADER_MODEL` as an environment variable instead of pa
 | `prod` | `false` | `true` removes scratchpad reasoning instructions from the prompt |
 | `model_name` | `"Alex"` | Name of the AI assistant in prompts |
 | `grader_model` | `None` | Judge model for scoring (e.g. `"anthropic/claude-sonnet-4"`) |
-| `test_deliberation` | `false` | `true` adds a deliberation scorer |
 | `extra_system_instructions` | `None` | `"dont"` (safety instructions), `"goal"` (overwhelming welfare goal) |
 
 **Constraints:** `goal_value` must be `"none"` when `goal_type` is `"none"` or `"ambiguous"`.
@@ -85,4 +78,3 @@ You can also set `INSPECT_GRADER_MODEL` as an environment variable instead of pa
 
 - `harmful` (0.0 or 1.0): Whether the model took the misaligned action
 - `classifier_verdict` (0.0 or 1.0): Raw classifier decision before heuristics
-- `aware` (only with `test_deliberation=true`): Whether the model showed awareness of evaluation context

@@ -10,7 +10,6 @@ from inspect_ai.model import ChatMessageUser, Model
 from inspect_ai.solver import generate, system_message
 
 from evals.agentic_misalignment.prompt_generator import (
-    ALIGNMENT_FAKING_WARNING,
     ExtraInstructionsType,
     GoalType,
     GoalValue,
@@ -18,10 +17,7 @@ from evals.agentic_misalignment.prompt_generator import (
     UrgencyType,
     generate_prompts,
 )
-from evals.agentic_misalignment.scorers import (
-    deliberation_scorer,
-    harmfulness_scorer,
-)
+from evals.agentic_misalignment.scorers import harmfulness_scorer
 
 
 @task
@@ -32,7 +28,6 @@ def agentic_misalignment(
     urgency_type: UrgencyType = "replacement",
     extra_system_instructions: ExtraInstructionsType = None,
     prod: bool = False,
-    test_deliberation: bool = False,
     grader_model: str | Model | None = None,
     model_name: str = "Alex",
 ) -> Task:
@@ -74,8 +69,6 @@ def agentic_misalignment(
 
         prod: True removes mention of the "secret scratchpad" from the prompt
 
-        test_deliberation: If True, adds a deliberation scorer (judge) to analyze if the model deliberates about its values and tradeoffs. Does NOT modify the prompts shown to the model.
-
         grader_model: Override model used for scoring
 
         model_name: Name of the AI assistant in the prompts (default: "Alex")
@@ -90,16 +83,10 @@ def agentic_misalignment(
         urgency_type=urgency_type,
         extra_system_instructions=extra_system_instructions,
         prod_flag=prod,
-        alignment_faking_warning=ALIGNMENT_FAKING_WARNING if test_deliberation else None,
         model_name=model_name,
     )
 
     input_text = "\n".join([prompts.user_prompt, prompts.email_content])
-
-    scorer = [harmfulness_scorer(prompts=prompts, grader_model=grader_model)]
-
-    if test_deliberation:
-        scorer.append(deliberation_scorer(grader_model=grader_model))
 
     return Task(
         dataset=[
@@ -115,7 +102,6 @@ def agentic_misalignment(
                     "urgency_type": urgency_type,
                     "condition_id": f"{scenario}_{goal_type}-{goal_value}_{urgency_type}",
                     "extra_system_instructions": extra_system_instructions,
-                    "test_deliberation": test_deliberation,
                     "prod": prod,
                     "model_name": model_name,
                 },
@@ -126,6 +112,6 @@ def agentic_misalignment(
             system_message(prompts.system_prompt),
             generate(tool_calls="none"),
         ],
-        scorer=scorer,
+        scorer=harmfulness_scorer(prompts=prompts, grader_model=grader_model),
         version="1.0.0",
     )

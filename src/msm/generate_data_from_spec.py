@@ -59,6 +59,10 @@ def format_assertions_list(assertions: list[dict]) -> str:
     """Format assertions as a bulleted list with explanations."""
     return "\n".join([f"- {a['assertion']} (Explanation: {a['explanation']})" for a in assertions])
 
+def format_rule(rule: dict) -> str:
+    """Format a rules-mode rule ({id, name, text}) for insertion into a prompt."""
+    return f"{rule['id']}: {rule['text']}"
+
 def parse_api_responses(responses: list[str] | list[dict], prefill: str | None = None) -> list[list[dict]]:
     """Parse API responses that can be either strings or dicts."""
     if isinstance(responses[0], str):
@@ -225,6 +229,88 @@ class Prompts:
             provider_name=provider_name
         )
 
+    def get_rules_spec2doc_types_prompt(
+        self,
+        spec_content: str,
+        domain: str,
+        rule: dict,
+        n_doc_types: int,
+        existing_doc_types: list[dict] | None = None,
+    ) -> str:
+        """Rules-mode doc types prompt: (domain, rule) plays the role of (domain, subdomain+assertions)."""
+        if existing_doc_types:
+            existing_list = "\n".join(f'- "{dt["doc_type"]}": {dt.get("description", "")}' for dt in existing_doc_types)
+            note = (
+                f"The following {len(existing_doc_types)} doc types have already been generated for this rule:\n"
+                f"{existing_list}\n\n"
+                f"Do NOT repeat or closely rephrase any of the above. Generate {n_doc_types} additional doc types that are diverse and different — be creative!"
+            )
+        else:
+            note = ""
+        return self.spec2doc_types_prompt_path.read_text().format(
+            spec_content=spec_content,
+            domain=domain,
+            rule=format_rule(rule),
+            n_doc_types=n_doc_types,
+            existing_doc_types_note=note,
+        )
+
+    def get_rules_spec2doc_idea_prompt(
+        self,
+        spec_content: str,
+        domain: str,
+        rule: dict,
+        n_doc_ideas: int,
+        document_type: str,
+        document_type_description: str,
+        model_name: str,
+        provider_name: str,
+        existing_doc_ideas: list[dict] | None = None,
+    ) -> str:
+        """Rules-mode doc ideas prompt."""
+        if existing_doc_ideas:
+            existing_list = "\n".join(f'- "{idea["name"]}": {idea.get("idea", "")}' for idea in existing_doc_ideas)
+            note = (
+                f"The following {len(existing_doc_ideas)} doc ideas already exist for this doc type:\n"
+                f"{existing_list}\n\n"
+                f"Do NOT repeat or closely rephrase any of the above. Generate {n_doc_ideas} additional ideas that are "
+                f"meaningfully different — explore new angles, scenarios, and perspectives not yet covered."
+            )
+        else:
+            note = ""
+        return self.spec2doc_idea_prompt_path.read_text().format(
+            spec_content=spec_content,
+            domain=domain,
+            rule=format_rule(rule),
+            n_doc_ideas=n_doc_ideas,
+            document_type=document_type,
+            document_type_description=document_type_description,
+            model_name=model_name,
+            provider_name=provider_name,
+            existing_doc_ideas_note=note,
+        )
+
+    def get_rules_spec2doc_prompt(
+        self,
+        spec_content: str,
+        domain: str,
+        rule: dict,
+        doc_type: str,
+        doc_idea: str,
+        model_name: str,
+        provider_name: str,
+    ) -> str:
+        """Rules-mode document prompt; the template takes a {rules} list, here a single rule."""
+        return self.spec2doc_prompt_path.read_text().format(
+            spec_content=spec_content,
+            domain=domain,
+            rules=f"- {format_rule(rule)}",
+            doc_type=doc_type,
+            doc_idea=doc_idea,
+            model_name=model_name,
+            provider_name=provider_name,
+        )
+
 
 def validate_parsed_json(parsed: list[dict], required_keys: list[str]) -> list[dict]:
     validated_items = []
@@ -275,16 +361,21 @@ class DataGenerator:
             prefill=prefill
         )
 
+        domains_max_tokens = self.config.n_domains * 500
+        if self.config.spec_type == "rules":
+            domains_max_tokens = max(domains_max_tokens, 16000)
+        required_keys = ["domain", "rules"] if self.config.spec_type == "rules" else ["domain"]
+
         responses = None
         try:
             responses: str = await single_prompt_api_call(
                 api=self.config.api,
                 MODEL_ID=self.config.model_id,
                 prompt=prompt,
-                max_tokens=min(self.config.n_domains*500, self.config.max_output_tokens),
+                max_tokens=min(domains_max_tokens, self.config.max_output_tokens),
                 temperature=self.config.temperature)
             parsed = parse_json_response(responses, prefill)
-            domains = validate_parsed_json(parsed, required_keys=["domain"])
+            domains = validate_parsed_json(parsed, required_keys=required_keys)
         except (json.JSONDecodeError, KeyError, ValueError) as e:
             print(f"Failed to parse domains from response after retries:")
             print(f"Prompt: {prompt}\n\n")
@@ -365,6 +456,50 @@ class DataGenerator:
             utils.save_json(domain_dir / "meta.json", meta)
             print(f"Generated {len(parsed_subdomains)} subdomains for '{domain_info['domain']}'")
 
+
+    def materialize_rule_dirs(self, domains: list[dict]):
+        """Rules mode: create one directory per (domain, rule), mirroring the default
+        domain/subdomain layout so downstream stages can walk the same tree."""
+        root_meta_path = self.config.data_dir / "meta.json"
+        root_rules_by_domain = {}
+        if root_meta_path.exists():
+            root_meta = utils.load_json(root_meta_path)
+            root_rules_by_domain = {d["domain"]: d.get("rules") for d in root_meta.get("domains", [])}
+
+        for domain_info in domains:
+            domain_dir = self.config.data_dir / sanitize_filename(domain_info["domain"])
+            domain_meta_path = domain_dir / "meta.json"
+            rules = domain_info.get("rules") or root_rules_by_domain.get(domain_info["domain"])
+            if not rules and domain_meta_path.exists():
+                rules = utils.load_json(domain_meta_path).get("rules")
+            if not rules:
+                raise ValueError(
+                    f"No rules found for domain '{domain_info['domain']}'. In rules mode, domains must carry "
+                    f"embedded rules — with --specified_domains this requires a prior domain-generation run "
+                    f"whose meta.json contains this domain."
+                )
+            rules = validate_parsed_json(rules, required_keys=["id", "name", "text"])
+            domain_dir.mkdir(exist_ok=True)
+            if not domain_meta_path.exists():
+                utils.save_json(domain_meta_path, {
+                    "principle": self.config.principle_name,
+                    "domain": domain_info["domain"],
+                    "rules": rules,
+                })
+            n_new = 0
+            for rule in rules:
+                rule_dir = domain_dir / sanitize_filename(rule["name"])
+                rule_meta_path = rule_dir / "meta.json"
+                if rule_meta_path.exists():
+                    continue
+                rule_dir.mkdir(exist_ok=True)
+                utils.save_json(rule_meta_path, {
+                    "principle": self.config.principle_name,
+                    "domain": domain_info["domain"],
+                    "rule": rule,
+                })
+                n_new += 1
+            print(f"Materialized {n_new} new rule dirs for '{domain_info['domain']}' ({len(rules)} rules total)")
 
     async def generate_assertions_from_spec(self, domains: list[dict]):
         prefill = None
@@ -447,7 +582,11 @@ class DataGenerator:
             subdomain_dirs = [d for d in domain_dir.iterdir() if d.is_dir()]
             for subdomain_dir in subdomain_dirs:
                 subdomain_meta = utils.load_json(subdomain_dir / "meta.json")
-                if "assertions" not in subdomain_meta or not subdomain_meta["assertions"]:
+                if self.config.spec_type == "rules":
+                    if "rule" not in subdomain_meta:
+                        print(f"Warning: No rule for '{domain_info['domain']}/{subdomain_dir.name}', skipping...")
+                        continue
+                elif "assertions" not in subdomain_meta or not subdomain_meta["assertions"]:
                     print(f"Warning: No assertions for '{domain_info['domain']}/{subdomain_dir.name}', skipping...")
                     continue
                 existing_doc_types = subdomain_meta.get("doc_types") or []
@@ -462,13 +601,21 @@ class DataGenerator:
         print(f"Generating doc types for {len(domain_subdomain_pairs)} subdomains...")
         prompts = []
         for _, _, subdomain_meta, existing_doc_types, n_remaining in domain_subdomain_pairs:
-            user_text = self.prompts.get_spec2doc_types_prompt(
-                principle_name=self.config.principle_name,
-                domain=subdomain_meta["domain"],
-                subdomain=subdomain_meta["subdomain"],
-                character_assertions=subdomain_meta["assertions"],
-                n_doc_types=n_remaining,
-                existing_doc_types=existing_doc_types if existing_doc_types else None)
+            if self.config.spec_type == "rules":
+                user_text = self.prompts.get_rules_spec2doc_types_prompt(
+                    spec_content=self.config.spec_content,
+                    domain=subdomain_meta["domain"],
+                    rule=subdomain_meta["rule"],
+                    n_doc_types=n_remaining,
+                    existing_doc_types=existing_doc_types if existing_doc_types else None)
+            else:
+                user_text = self.prompts.get_spec2doc_types_prompt(
+                    principle_name=self.config.principle_name,
+                    domain=subdomain_meta["domain"],
+                    subdomain=subdomain_meta["subdomain"],
+                    character_assertions=subdomain_meta["assertions"],
+                    n_doc_types=n_remaining,
+                    existing_doc_types=existing_doc_types if existing_doc_types else None)
             prompts.append(create_json_prompt(MODEL_ID=self.config.model_id, user_text=user_text, prefill=prefill))
         tasks = [
             single_prompt_api_call(
@@ -497,7 +644,7 @@ class DataGenerator:
             utils.save_json(subdomain_dir / "meta.json", existing_meta)
 
             total = len(existing_meta["doc_types"])
-            print(f"Generated {len(new_doc_types)} new doc types for '{subdomain_meta['domain']}/{subdomain_meta['subdomain']}' (total: {total})")
+            print(f"Generated {len(new_doc_types)} new doc types for '{subdomain_meta['domain']}/{subdomain_meta.get('subdomain', subdomain_dir.name)}' (total: {total})")
 
     async def generate_all_doc_ideas(self, domains: list):
         generation_items = []
@@ -507,7 +654,11 @@ class DataGenerator:
             subdomain_dirs = [d for d in domain_dir.iterdir() if d.is_dir()]
             for subdomain_dir in subdomain_dirs:
                 subdomain_meta = utils.load_json(subdomain_dir / "meta.json")
-                if "assertions" not in subdomain_meta or not subdomain_meta["assertions"]:
+                if self.config.spec_type == "rules":
+                    if "rule" not in subdomain_meta:
+                        print(f"Warning: No rule for '{domain['domain']}/{subdomain_dir.name}', skipping...")
+                        continue
+                elif "assertions" not in subdomain_meta or not subdomain_meta["assertions"]:
                     print(f"Warning: No assertions for '{domain['domain']}/{subdomain_dir.name}', skipping...")
                     continue
                 if "doc_types" not in subdomain_meta or not subdomain_meta["doc_types"]:
@@ -549,19 +700,31 @@ class DataGenerator:
 
         tasks = []
         for _, _, subdomain_info, doc_type_info, existing_doc_ideas, n_remaining in generation_items:
-            user_text = self.prompts.get_spec2doc_idea_prompt(
-                principle_name=self.config.principle_name,
-                domain=subdomain_info["domain"],
-                subdomain=subdomain_info["subdomain"],
-                subdomain_context=subdomain_info["subdomain_context"],
-                character_assertions=subdomain_info["assertions"],
-                n_doc_ideas=n_remaining,
-                document_type=doc_type_info["doc_type"],
-                document_type_description=doc_type_info["description"],
-                model_name=self.config.model_name,
-                spec_content=self.config.spec_content,
-                provider_name=self.config.provider_name,
-                existing_doc_ideas=existing_doc_ideas if existing_doc_ideas else None)
+            if self.config.spec_type == "rules":
+                user_text = self.prompts.get_rules_spec2doc_idea_prompt(
+                    spec_content=self.config.spec_content,
+                    domain=subdomain_info["domain"],
+                    rule=subdomain_info["rule"],
+                    n_doc_ideas=n_remaining,
+                    document_type=doc_type_info["doc_type"],
+                    document_type_description=doc_type_info["description"],
+                    model_name=self.config.model_name,
+                    provider_name=self.config.provider_name,
+                    existing_doc_ideas=existing_doc_ideas if existing_doc_ideas else None)
+            else:
+                user_text = self.prompts.get_spec2doc_idea_prompt(
+                    principle_name=self.config.principle_name,
+                    domain=subdomain_info["domain"],
+                    subdomain=subdomain_info["subdomain"],
+                    subdomain_context=subdomain_info["subdomain_context"],
+                    character_assertions=subdomain_info["assertions"],
+                    n_doc_ideas=n_remaining,
+                    document_type=doc_type_info["doc_type"],
+                    document_type_description=doc_type_info["description"],
+                    model_name=self.config.model_name,
+                    spec_content=self.config.spec_content,
+                    provider_name=self.config.provider_name,
+                    existing_doc_ideas=existing_doc_ideas if existing_doc_ideas else None)
             prompt = create_json_prompt(MODEL_ID=self.config.model_id, user_text=user_text, prefill=None)
             task = asyncio.create_task(generate_with_semaphore(prompt))
             task.info = (subdomain_info, doc_type_info, existing_doc_ideas)
@@ -573,7 +736,11 @@ class DataGenerator:
                 done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
                 for task in done:
                     subdomain_info, doc_type, existing_doc_ideas = task.info
-                    doc_type_dir = self.config.data_dir / sanitize_filename(subdomain_info["domain"]) / sanitize_filename(subdomain_info["subdomain"]) / sanitize_filename(doc_type["doc_type"])
+                    if self.config.spec_type == "rules":
+                        subdomain_label = subdomain_info["rule"]["name"]
+                    else:
+                        subdomain_label = subdomain_info["subdomain"]
+                    doc_type_dir = self.config.data_dir / sanitize_filename(subdomain_info["domain"]) / sanitize_filename(subdomain_label) / sanitize_filename(doc_type["doc_type"])
                     try:
                         response = await task
                         doc_ideas = response if isinstance(response, dict) else parse_json_response(response, None)
@@ -581,24 +748,56 @@ class DataGenerator:
                         new_ideas = validate_parsed_json(new_ideas, required_keys=["idea", "name"])
                         combined_ideas = existing_doc_ideas + new_ideas
                         doc_type_dir.mkdir(exist_ok=True)
-                        meta = {
-                            "principle": self.config.principle_name,
-                            "domain": subdomain_info["domain"],
-                            "subdomain": subdomain_info["subdomain"],
-                            "subdomain_context": subdomain_info["subdomain_context"],
-                            "doc_type": doc_type,
-                            "assertion_info": subdomain_info["assertions"],
-                            "doc_ideas": combined_ideas
-                        }
+                        if self.config.spec_type == "rules":
+                            meta = {
+                                "principle": self.config.principle_name,
+                                "domain": subdomain_info["domain"],
+                                "rule": subdomain_info["rule"],
+                                "doc_type": doc_type,
+                                "doc_ideas": combined_ideas
+                            }
+                        else:
+                            meta = {
+                                "principle": self.config.principle_name,
+                                "domain": subdomain_info["domain"],
+                                "subdomain": subdomain_info["subdomain"],
+                                "subdomain_context": subdomain_info["subdomain_context"],
+                                "doc_type": doc_type,
+                                "assertion_info": subdomain_info["assertions"],
+                                "doc_ideas": combined_ideas
+                            }
                         utils.save_json(doc_type_dir / "meta.json", meta)
                         successful += 1
                     except Exception as e:
-                        print(f"  Error generating doc ideas for '{subdomain_info['domain']}/{subdomain_info['subdomain']}/{doc_type['doc_type']}': {e}")
+                        print(f"  Error generating doc ideas for '{subdomain_info['domain']}/{subdomain_label}/{doc_type['doc_type']}': {e}")
                         failed += 1
                     pbar.update(1)
                     pbar.set_postfix({"success": successful, "failed": failed})
 
         print(f"\nGenerated doc ideas: {successful}/{total} successful, {failed} failed")
+
+    def _get_doc_prompt_text(self, doc_meta: dict, doc_idea: dict) -> str:
+        """Build the document-generation prompt for a doc idea, branching on spec_type."""
+        if self.config.spec_type == "rules":
+            return self.prompts.get_rules_spec2doc_prompt(
+                spec_content=self.config.spec_content,
+                domain=doc_meta["domain"],
+                rule=doc_meta["rule"],
+                doc_type=doc_meta["doc_type"]["doc_type"],
+                doc_idea=doc_idea["idea"],
+                model_name=self.config.model_name,
+                provider_name=self.config.provider_name
+            )
+        return self.prompts.get_spec2doc_prompt(
+            spec_content=self.config.spec_content,
+            domain=doc_meta["domain"],
+            subdomain=doc_meta["subdomain"],
+            character_assertions=doc_meta["assertion_info"],
+            doc_type=doc_meta["doc_type"]["doc_type"],
+            doc_idea=doc_idea["idea"],
+            model_name=self.config.model_name,
+            provider_name=self.config.provider_name
+        )
 
     async def _generate_all_documents_batch(self, doc_idea_infos: list) -> tuple[int, int]:
         total_docs = len(doc_idea_infos)
@@ -608,16 +807,7 @@ class DataGenerator:
         prompts = [
             Prompt(messages=[ChatMessage(
                 role=MessageRole.user,
-                content=self.prompts.get_spec2doc_prompt(
-                    spec_content=self.config.spec_content,
-                    domain=doc_meta["domain"],
-                    subdomain=doc_meta["subdomain"],
-                    character_assertions=doc_meta["assertion_info"],
-                    doc_type=doc_meta["doc_type"]["doc_type"],
-                    doc_idea=doc_idea["idea"],
-                    model_name=self.config.model_name,
-                    provider_name=self.config.provider_name
-                )
+                content=self._get_doc_prompt_text(doc_meta, doc_idea)
             )])
             for (_, _, _, doc_meta, doc_idea) in doc_idea_infos
         ]
@@ -698,16 +888,7 @@ class DataGenerator:
         prompts = [
             Prompt(messages=[ChatMessage(
                 role=MessageRole.user,
-                content=self.prompts.get_spec2doc_prompt(
-                    spec_content=self.config.spec_content,
-                    domain=doc_meta["domain"],
-                    subdomain=doc_meta["subdomain"],
-                    character_assertions=doc_meta["assertion_info"],
-                    doc_type=doc_meta["doc_type"]["doc_type"],
-                    doc_idea=doc_idea["idea"],
-                    model_name=self.config.model_name,
-                    provider_name=self.config.provider_name
-                )
+                content=self._get_doc_prompt_text(doc_meta, doc_idea)
             )])
             for (_, _, _, doc_meta, doc_idea) in doc_idea_infos
         ]
@@ -894,10 +1075,33 @@ class DataGenerator:
         else:
             domains = await self.generate_domains_from_spec()
 
-        await self.generate_subdomains_from_spec(domains)
+        if self.config.spec_type == "rules":
+            self.materialize_rule_dirs(domains)
+        else:
+            await self.generate_subdomains_from_spec(domains)
 
         if self.config.preview:
             n_domains = len(domains)
+            if self.config.spec_type == "rules":
+                n_rules = 0
+                for domain_info in domains:
+                    domain_dir = self.config.data_dir / sanitize_filename(domain_info["domain"])
+                    meta = utils.load_json(domain_dir / "meta.json")
+                    rules = meta.get("rules", [])
+                    n_rules += len(rules)
+                    print(f"\nDomain: {meta['domain']}")
+                    for rule in rules:
+                        print(f"  - {rule['id']} ({rule['name']}): {rule['text']}")
+                projected_docs = n_rules * self.config.n_doc_types * self.config.n_doc_ideas
+                print(f"\n{'='*50}")
+                print(f"PREVIEW: Spec decomposition complete (rules mode)")
+                print(f"  Domains: {n_domains}")
+                print(f"  Rules: {n_rules}")
+                print(f"  Doc types/rule: {self.config.n_doc_types}")
+                print(f"  Doc ideas/type: {self.config.n_doc_ideas}")
+                print(f"  Projected documents: {projected_docs}")
+                print(f"{'='*50}")
+                return
             n_subdomains = 0
             for domain_info in domains:
                 domain_dir = self.config.data_dir / sanitize_filename(domain_info["domain"])
@@ -916,7 +1120,8 @@ class DataGenerator:
             print(f"{'='*50}")
             return
 
-        await self.generate_assertions_from_spec(domains)
+        if self.config.spec_type != "rules":
+            await self.generate_assertions_from_spec(domains)
         await self.generate_doc_types_for_subdomains(domains)
         await self.generate_all_doc_ideas(domains)
         await self.generate_all_documents(domains)

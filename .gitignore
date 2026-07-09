@@ -23,4 +23,5 @@ SECRETS
 .checkpoints
 
 # Data
-data/spec/constitution_chain/*.txt
+data
+/spec/constitution_chain/*.txt

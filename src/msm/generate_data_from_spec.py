@@ -85,6 +85,7 @@ class DataGeneratorConfig(ExperimentConfigBase):
     batch_timeout_minutes: int = 180
     anthropic_batch_tag: str = "ANTHROPIC_BATCH_API_KEY"
     tokenizer_name: str = "meta-llama/Llama-3.1-8B"
+    doc_max_tokens: int = 5000
     exact_token_count: bool = False
     preview: bool = False
     data_dir: Path = field(init=False)
@@ -637,7 +638,7 @@ class DataGenerator:
                 batch_api(
                     model_id=self.config.model_id,
                     prompts=prompts,
-                    max_tokens=min(5000, self.config.max_output_tokens),
+                    max_tokens=min(self.config.doc_max_tokens, self.config.max_output_tokens),
                     temperature=self.config.temperature,
                 ),
                 timeout=timeout_seconds,
@@ -690,7 +691,7 @@ class DataGenerator:
                     api=self.config.api,
                     MODEL_ID=self.config.model_id,
                     prompt=prompt,
-                    max_tokens=min(5000, self.config.max_output_tokens),
+                    max_tokens=min(self.config.doc_max_tokens, self.config.max_output_tokens),
                     temperature=self.config.temperature,
                 )
 

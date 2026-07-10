@@ -424,7 +424,7 @@ class DataGenerator:
                 api=self.config.api,
                 MODEL_ID=self.config.model_id,
                 prompt=prompt,
-                max_tokens=min(8192, self.config.max_output_tokens),
+                max_tokens=min(32000, self.config.max_output_tokens),
                 temperature=self.config.temperature,
                 )
             for prompt in prompts
@@ -432,6 +432,7 @@ class DataGenerator:
         responses: list[str] | list[dict] = await asyncio.gather(*tasks)
 
         subdomains_lists = []
+        parse_failures = []
         for i, response in enumerate(responses):
             domain_info = domains_to_generate[i]
             try:
@@ -441,9 +442,12 @@ class DataGenerator:
                 print(f"Failed to parse subdomains for '{domain_info['domain']}':")
                 print(f"Error: {e}")
                 print(f"Response: {response}")
-                raise e
+                subdomains_lists.append(None)
+                parse_failures.append((domain_info["domain"], e))
 
         for domain_info, subdomains in zip(domains_to_generate, subdomains_lists):
+            if subdomains is None:
+                continue
             domain_dir = self.config.data_dir / sanitize_filename(domain_info["domain"])
             domain_dir.mkdir(exist_ok=True)
             parsed_subdomains = subdomains["subdomains"] if isinstance(subdomains, dict) and "subdomains" in subdomains else subdomains
@@ -455,6 +459,13 @@ class DataGenerator:
             }
             utils.save_json(domain_dir / "meta.json", meta)
             print(f"Generated {len(parsed_subdomains)} subdomains for '{domain_info['domain']}'")
+
+        if parse_failures:
+            raise ValueError(
+                f"Failed to parse subdomains for {len(parse_failures)} domain(s) "
+                f"(successful domains were saved; rerun to retry the failures): "
+                f"{[d for d, _ in parse_failures]}"
+            ) from parse_failures[0][1]
 
 
     def materialize_rule_dirs(self, domains: list[dict]):

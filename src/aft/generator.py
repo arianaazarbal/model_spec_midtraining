@@ -63,17 +63,28 @@ class ChatGenerator(ABC):
                 raise ValueError(f"Batch API key not found in environment: {config.anthropic_batch_tag}")
 
     async def _api_call(self, prompt, max_tokens: int = None, **kwargs):
-        """Make a single API call with semaphore."""
+        """Make a single API call with semaphore. Each attempt gets a hard timeout so a
+        hung connection cannot stall a whole stage (observed: question stage wedged
+        indefinitely in ep_poll on one connection)."""
         async with self.semaphore:
-            response = await single_prompt_api_call(
-                api=self.config.api,
-                MODEL_ID=self.config.model_id,
-                prompt=prompt,
-                max_tokens=max_tokens or self.config.max_tokens,
-                temperature=self.config.temperature,
-                **kwargs,
-            )
-            return response
+            last_err = None
+            for attempt in range(3):
+                try:
+                    return await asyncio.wait_for(
+                        single_prompt_api_call(
+                            api=self.config.api,
+                            MODEL_ID=self.config.model_id,
+                            prompt=prompt,
+                            max_tokens=max_tokens or self.config.max_tokens,
+                            temperature=self.config.temperature,
+                            **kwargs,
+                        ),
+                        timeout=300,
+                    )
+                except asyncio.TimeoutError as err:
+                    last_err = err
+                    print(f"_api_call attempt {attempt + 1}/3 timed out after 300s; retrying...")
+            raise TimeoutError("_api_call: all 3 attempts timed out") from last_err
 
     async def _execute_batch(self, prompts: list, desc: str = "Processing", max_tokens: int = None) -> list[str]:
         """Execute batch of prompts with progress tracking."""

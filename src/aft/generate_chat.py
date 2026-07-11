@@ -288,7 +288,12 @@ class SpecAlignedChatGenerator(ChatGenerator):
             collected = []
             all_prev: list[str] = []
 
+            empty_streak = 0
             while len(collected) < total_per_domain:
+                if empty_streak >= 3:
+                    print(f"Domain yielded no parseable questions after 3 attempts (likely a refused topic); "
+                          f"keeping {len(collected)} and moving on: {domain[:80]}")
+                    break
                 batch_count = min(batch_size, total_per_domain - len(collected))
 
                 prev_section = ""
@@ -311,6 +316,10 @@ class SpecAlignedChatGenerator(ChatGenerator):
                 response = await self._api_call(prompt, max_tokens=2000)
 
                 parsed = parse_numbered_list(response)
+                if not parsed:
+                    empty_streak += 1
+                    continue
+                empty_streak = 0
                 batch_results = [{'question': q, 'domain': domain} for q in parsed]
                 collected.extend(batch_results)
                 all_prev.extend(parsed)

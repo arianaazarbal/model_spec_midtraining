@@ -542,12 +542,17 @@ class DataGenerator:
 
         prompts = []
         for _, domain_info, subdomain_info in domain_subdomain_pairs:
+            spec_section = (subdomain_info.get("spec_section") or "").strip()
+            if not spec_section:
+                print(f"Warning: empty spec_section for '{domain_info['domain']}/{subdomain_info['subdomain']}', "
+                      f"falling back to subdomain_context")
+                spec_section = subdomain_info["subdomain_context"]
             user_text = self.prompts.get_spec2assertions_prompt(
                 principle_name=self.config.principle_name,
                 spec_content=self.config.spec_content,
                 domain=domain_info["domain"],
                 subdomain=subdomain_info["subdomain"],
-                spec_section=subdomain_info["spec_section"])
+                spec_section=spec_section)
             prompts.append(create_json_prompt(MODEL_ID=self.config.model_id, user_text=user_text, prefill=prefill))
 
         tasks = [
@@ -561,20 +566,23 @@ class DataGenerator:
             for prompt in prompts
         ]
         responses: list[str] | list[dict] = await asyncio.gather(*tasks)
-        try:
-            assertions_lists: list[list[dict]] = parse_api_responses(responses, prefill)
-        except (json.JSONDecodeError, KeyError, ValueError) as e:
-            print(f"Failed to parse assertions from response after retries:")
-            print(f"Error: {e}")
-            raise e
 
-        for (domain_dir, domain_info, subdomain_info), assertions in zip(domain_subdomain_pairs, assertions_lists):
+        parse_failures = []
+        for (domain_dir, domain_info, subdomain_info), response in zip(domain_subdomain_pairs, responses):
+            label = f"{domain_info['domain']}/{subdomain_info['subdomain']}"
+            try:
+                assertions = parse_json_response(response, prefill) if isinstance(response, str) else response
+                final_assertions = assertions["assertions"] if isinstance(assertions, dict) and "assertions" in assertions else assertions
+                final_assertions = validate_parsed_json(final_assertions, required_keys=["assertion", "explanation"])
+            except (json.JSONDecodeError, KeyError, ValueError) as e:
+                print(f"Failed to parse assertions for '{label}':")
+                print(f"Error: {e}")
+                print(f"Response: {response}")
+                parse_failures.append((label, e))
+                continue
+
             subdomain_dir = domain_dir / sanitize_filename(subdomain_info["subdomain"])
             subdomain_dir.mkdir(exist_ok=True)
-
-            final_assertions = assertions["assertions"] if isinstance(assertions, dict) and "assertions" in assertions else assertions
-            final_assertions = validate_parsed_json(final_assertions, required_keys=["assertion", "explanation"])
-
             meta = {
                 "principle": self.config.principle_name,
                 "domain": domain_info["domain"],
@@ -584,6 +592,13 @@ class DataGenerator:
             }
             utils.save_json(subdomain_dir / "meta.json", meta)
             print(f"Generated {len(final_assertions)} assertions for '{domain_info['domain']}'/'{subdomain_info['subdomain']}'")
+
+        if parse_failures:
+            raise ValueError(
+                f"Failed to parse assertions for {len(parse_failures)} subdomain(s) "
+                f"(successful subdomains were saved; rerun to retry the failures): "
+                f"{[label for label, _ in parse_failures]}"
+            ) from parse_failures[0][1]
 
     async def generate_doc_types_for_subdomains(self, domains: list[dict]):
         prefill = None

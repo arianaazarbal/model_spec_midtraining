@@ -594,11 +594,17 @@ class DataGenerator:
             print(f"Generated {len(final_assertions)} assertions for '{domain_info['domain']}'/'{subdomain_info['subdomain']}'")
 
         if parse_failures:
-            raise ValueError(
-                f"Failed to parse assertions for {len(parse_failures)} subdomain(s) "
-                f"(successful subdomains were saved; rerun to retry the failures): "
-                f"{[label for label, _ in parse_failures]}"
-            ) from parse_failures[0][1]
+            labels = [label for label, _ in parse_failures]
+            msg = f"Failed to parse assertions for {len(parse_failures)} subdomain(s): {labels}"
+            # A few subdomains can deterministically fail (e.g. a truncated section
+            # fragment that the extractor model correctly refuses to fabricate from).
+            # Skipping them costs negligible corpus coverage and keeps unattended runs
+            # from crash-looping on rerun. NB: on resume this function only re-processes
+            # the not-yet-saved subdomains, so gauge severity by an ABSOLUTE count, not a
+            # fraction of the (shrinking) resumed batch. Abort only if a lot fail at once.
+            if len(parse_failures) > 10:
+                raise ValueError(msg + " (>10 subdomains failed; aborting)") from parse_failures[0][1]
+            print(f"WARNING: {msg} — skipping these subdomains and continuing.", flush=True)
 
     async def generate_doc_types_for_subdomains(self, domains: list[dict]):
         prefill = None
